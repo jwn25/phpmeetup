@@ -2,10 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ProductUpdateRequest;
+use App\Jobs\ProductUpdateJob;
+use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductLog;
 use App\Models\ProductPriceLog;
 use App\Models\User;
+use App\Models\Vendor;
+use App\Notifications\ProductUpdateNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -13,16 +18,6 @@ use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     *
-     * @return \Illuminate\Http\Response
-     */
-    public function index()
-    {
-        //
-    }
-
     /**
      * Show the form for creating a new resource.
      *
@@ -92,57 +87,10 @@ class ProductController extends Controller
      * @param  int  $id
      * @return \Illuminate\Http\Response
      */
-    public function update(Request $request, $id)
+    public function update(Product $product, ProductUpdateRequest $request)
     {
-        $product = Product::find($id);
-
-        if (!$product) {
-            abort(404);
-        }
-
-        $validation = Validator::make($request->all(), [
-            'title' => 'required',
-            'sku' => 'required',
-            'short_description' => 'required',
-            'quantity' => 'required|numeric',
-            'price' => 'required|numeric',
-            'description' => "required"
-        ]);
-
-        if ($validation->fails()) {
-            return redirect()->back()->withErrors($validation)->withInput();
-        }
-
-        $is_price_changed = $product->price !== $request->price;
-        $orgiginal_price = $product->price;
         $product->update($request->all());
-
-        if ($is_price_changed) {
-            ProductPriceLog::create([
-                'user_id' =>1,
-                'product_id' => $product->id, 
-                'price_before' => $orgiginal_price,
-                'current_price' => $request->price
-            ]);
-        }
-
-        ProductLog::create([
-            'user_id' =>1,
-            'product_id' => $product->id
-        ]);
-
-        $admin = User::where('role', 'admin')->first();
-        if ($admin) {
-            Mail::send('emails.product_updated', ['product' => $product], function($mail) use ($admin) {
-                $mail->from(
-                    config('mail.from.address'),
-                    config('mail.from.name')
-                );
-
-                $mail->to($admin->email, $admin->name)->subject('Product Update Notification');
-            });
-        }
-
+        dispatch(new ProductUpdateJob($product));
         return redirect()->route('home')->with('success', "Product successfully updated");
     }
 
@@ -155,5 +103,37 @@ class ProductController extends Controller
     public function destroy($id)
     {
         //
+    }
+
+    //Example of early returns
+    public function calculateVendorAnnualCharge($vendor_id) {
+        $vendor = Vendor::find($vendor_id);
+
+        if ($vendor) {
+            if ($vendor->should_pay) {
+                $vendor_orders = Order::where('vendor_id', $vendor_id)
+                    ->whereBetween('order_date', [
+                        now()->subYear()->startOfYear(),
+                        now()->subYear()->endOfYear()
+                    ]);
+                
+                $order_total = 0;
+                foreach ($vendor_orders as $vendor_order) {
+                    $order_total += $vendor_order->amount;
+                }
+
+                if ($order_total > 100000) {
+                    $vendor_charge = $order_total * 0.15; //Should Pay 15% of total
+                } else {
+                    $vendor_charge = $order_total * 0.10; //Should pay 10% of total
+                }
+            } else {
+                $vendor_charge = 0;
+            }
+        } else {
+            $vendor_charge = 0;
+        }
+
+        return $vendor_charge;
     }
 }
